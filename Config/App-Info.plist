@@ -15,4 +15,6 @@
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
 <key>LSApplicationQueriesSchemes</key><array><string>comgooglemaps</string></array>
 <key>NSLocationWhenInUseUsageDescription</key><string>Your location is used as the starting point for subway travel times.</string>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Allows the widget to keep travel times current as you move, even when the app is closed.</string>
+<key>ITSAppUsesNonExemptEncryption</key><false/>
 </dict></plist>

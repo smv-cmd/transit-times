@@ -11,4 +11,7 @@
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>NSExtension</key><dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>
+<key>NSWidgetWantsLocation</key><true/>
+<key>NSLocationWhenInUseUsageDescription</key><string>Your location is the starting point for travel times.</string>
+<key>ITSAppUsesNonExemptEncryption</key><false/>
 </dict></plist>

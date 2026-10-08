@@ -3,7 +3,8 @@ import MapKit
 
 struct ContentView: View {
     @StateObject private var model = TransitModel()
-    @StateObject private var location = LocationProvider()
+    @ObservedObject private var location = LocationProvider.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selected: UUID?
     @State private var showSettings = false
     @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
@@ -12,6 +13,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 map.frame(height: 280)
+                leaveBar
                 if model.apiKey.isEmpty {
                     ContentUnavailableView("Add your Google API key", systemImage: "key.fill",
                         description: Text("Tap the gear and paste a key with the Routes API enabled."))
@@ -41,7 +43,10 @@ struct ContentView: View {
             .sheet(isPresented: $showSettings, onDismiss: { Task { await model.refresh(from: location.coordinate) } }) {
                 SettingsView(model: model)
             }
-            .task(id: location.coordinate == nil) { await model.refresh(from: location.coordinate) }
+            .onChange(of: location.coordinate?.latitude) { _, _ in Task { await model.refreshIfNeeded(from: location.coordinate) } }
+            .onChange(of: scenePhase) { _, p in if p == .active { Task { await model.refreshIfNeeded(from: location.coordinate) } } }
+            .task { await model.refreshIfNeeded(from: location.coordinate) }
+            .task { while !Task.isCancelled { try? await Task.sleep(for: .seconds(60)); await model.refreshIfNeeded(from: location.coordinate) } }
         }
     }
 
@@ -50,7 +55,7 @@ struct ContentView: View {
             UserAnnotation()
             ForEach(model.destinations) { d in
                 if let c = model.results[d.id]?.coordinate {
-                    Marker(d.name, systemImage: "tram.fill", coordinate: c)
+                    Marker(d.name, systemImage: d.mode.icon, coordinate: c)
                         .tint(selected == d.id ? .red : .blue)
                 }
             }
@@ -72,17 +77,31 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(d.name).font(.headline)
+                Picker("Mode", selection: modeBinding(d)) {
+                    ForEach(TravelMode.allCases, id: \.self) { Image(systemName: $0.icon).tag($0) }
+                }
+                .pickerStyle(.segmented).frame(width: 90)
                 Spacer()
                 if let m = r?.minutes { Text("\(m) min").font(.title3.bold().monospacedDigit()) }
+            }
+            if let arrive = r?.arriveBy, let leave = r?.departAt, r?.error == nil {
+                Label("Leave by \(leave.formatted(date: .omitted, time: .shortened)) → arrive \(arrive.formatted(date: .omitted, time: .shortened))", systemImage: "figure.walk.departure")
+                    .font(.caption.bold()).foregroundStyle(leave < Date() ? .red : .primary)
             }
             if let e = r?.error {
                 Text(e).font(.caption).foregroundStyle(.red)
             } else if let r {
                 HStack(spacing: 4) {
+                    if d.mode == .car { Image(systemName: "car.fill").font(.caption).foregroundStyle(.secondary); Text(r.trafficText ?? "with traffic").font(.caption.bold()).foregroundStyle(r.trafficText == nil ? .secondary : r.trafficColor) }
                     ForEach(Array(r.lines.enumerated()), id: \.offset) { _, l in LineBadge(line: l) }
                     if let h = r.headsign { Text("to \(h)").font(.caption).foregroundStyle(.secondary) }
                 }
-                if !r.departures.isEmpty {
+                ForEach(r.alerts, id: \.self) { a in
+                    Label(a.text, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).lineLimit(3)
+                        .foregroundStyle(a.kind == .delay ? .red : a.kind == .reduced ? .orange : .yellow)
+                }
+                if d.mode == .train, !r.departures.isEmpty {
                     HStack(spacing: 4) {
                         Image(systemName: "clock")
                         Text("Next trains from \(r.boardStop ?? "station"):")
@@ -96,12 +115,50 @@ struct ContentView: View {
         .padding(.vertical, 4)
     }
 
+    private var leaveBar: some View {
+        HStack {
+            Picker("Timing", selection: Binding(
+                get: { model.arriveMinutes != nil ? 2 : model.leaveMinutes != nil ? 1 : 0 },
+                set: { v in
+                    let c = Calendar.current.dateComponents([.hour, .minute], from: Date().addingTimeInterval(v == 2 ? 3600 : 1800))
+                    let m = (c.hour ?? 8) * 60 + (c.minute ?? 0)
+                    model.leaveMinutes = v == 1 ? m : nil
+                    model.arriveMinutes = v == 2 ? m : nil
+                })) {
+                Text("Leave now").tag(0)
+                Text("Leave at").tag(1)
+                Text("Arrive by").tag(2)
+            }.pickerStyle(.segmented)
+            if model.leaveMinutes != nil || model.arriveMinutes != nil {
+                DatePicker("", selection: Binding(
+                    get: { (model.arriveMinutes != nil ? Shared.arrivalDate() : nil) ?? Shared.departureDate() },
+                    set: { d in
+                        let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+                        let m = (c.hour ?? 0) * 60 + (c.minute ?? 0)
+                        if model.arriveMinutes != nil { model.arriveMinutes = m } else { model.leaveMinutes = m }
+                    }), displayedComponents: .hourAndMinute).labelsHidden()
+            }
+        }
+        .padding(.horizontal).padding(.vertical, 6)
+        .onChange(of: model.leaveMinutes) { _, _ in Task { await model.refresh(from: location.coordinate) } }
+        .onChange(of: model.arriveMinutes) { _, _ in Task { await model.refresh(from: location.coordinate) } }
+    }
+
+    private func modeBinding(_ d: Destination) -> Binding<TravelMode> {
+        Binding(get: { d.mode }, set: { new in
+            guard let i = model.destinations.firstIndex(where: { $0.id == d.id }) else { return }
+            model.destinations[i].mode = new
+            model.results[d.id] = nil
+            Task { await model.refresh(from: location.coordinate) }
+        })
+    }
+
     private func openGoogleMaps(_ d: Destination) {
         let dest = d.address.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         var origin = ""
         if let c = location.coordinate { origin = "\(c.latitude),\(c.longitude)" }
-        let app = URL(string: "comgooglemaps://?saddr=\(origin)&daddr=\(dest)&directionsmode=transit")!
-        let web = URL(string: "https://www.google.com/maps/dir/?api=1&origin=\(origin)&destination=\(dest)&travelmode=transit")!
+        let app = URL(string: "comgooglemaps://?saddr=\(origin)&daddr=\(dest)&directionsmode=\(d.mode == .car ? "driving" : "transit")")!
+        let web = URL(string: "https://www.google.com/maps/dir/?api=1&origin=\(origin)&destination=\(dest)&travelmode=\(d.mode == .car ? "driving" : "transit")")!
         UIApplication.shared.open(UIApplication.shared.canOpenURL(app) ? app : web)
     }
 }
@@ -131,6 +188,9 @@ struct SettingsView: View {
                     ForEach($model.destinations) { $d in
                         VStack(alignment: .leading) {
                             TextField("Name", text: $d.name).font(.headline)
+                            Picker("Mode", selection: $d.mode) {
+                                ForEach(TravelMode.allCases, id: \.self) { Label($0.label, systemImage: $0.icon).tag($0) }
+                            }.pickerStyle(.segmented)
                             TextField("Address or place", text: $d.address)
                                 .font(.subheadline).foregroundStyle(.secondary)
                         }
