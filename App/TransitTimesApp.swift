@@ -57,6 +57,29 @@ final class TransitModel: ObservableObject {
     @Published var loading = false
     @Published var leaveMinutes = Shared.leaveMinutes { didSet { Shared.leaveMinutes = leaveMinutes } }
     @Published var arriveMinutes = Shared.arriveMinutes { didSet { Shared.arriveMinutes = arriveMinutes } }
+    #if DEBUG
+    /// `-demo` launch argument: fills sample data so App Store screenshots can be captured without a Google key.
+    init() {
+        guard ProcessInfo.processInfo.arguments.contains("-demo") else { return }
+        let d = Destination.defaults
+        apiKey = "demo"
+        let now = Date()
+        func r(_ m: Int, _ lines: [Line], _ lat: Double, _ lon: Double, deps: [Int] = [], alerts: [LineAlert] = []) -> TransitResult {
+            TransitResult(minutes: m, lines: lines, boardStop: "Nearest station", headsign: "Downtown",
+                          departures: deps.map { now.addingTimeInterval(Double($0) * 60) }, alerts: alerts, lat: lat, lon: lon)
+        }
+        func ln(_ n: String, _ c: String) -> Line { Line(name: n, colorHex: c) }
+        results = [
+            d[0].id: r(24, [ln("A", "#0039a6"), ln("C", "#0039a6")], 40.7580, -73.9855, deps: [3, 9]),
+            d[1].id: r(18, [ln("4", "#00933c"), ln("5", "#00933c")], 40.7527, -73.9772, deps: [5, 11],
+                       alerts: [LineAlert(line: "4", kind: .delay, text: "Southbound 4 trains are running with delays.")]),
+            d[2].id: r(31, [ln("J", "#996633")], 40.7132, -74.0041, deps: [12, 20]),
+            d[3].id: r(27, [ln("L", "#a7a9ac")], 40.7177, -73.9573, deps: [2, 8]),
+            d[4].id: { var x = r(58, [], 40.6413, -73.7781); x.trafficRatio = 1.35; x.trafficDelayMin = 15; return x }(),
+        ]
+    }
+    #endif
+
     private var lastRefreshOrigin: CLLocationCoordinate2D?
     private var lastRefreshDate = Date.distantPast
 
@@ -73,6 +96,9 @@ final class TransitModel: ObservableObject {
     }
 
     func refresh(from origin: CLLocationCoordinate2D?) async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-demo") { return }
+        #endif
         guard let origin, !apiKey.isEmpty else { return }
         loading = true
         lastRefreshOrigin = origin
